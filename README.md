@@ -12,6 +12,8 @@ pinned: false
 
 # CrossWord
 
+![pic](pic.png)
+
 Enter a crossword clue from your own puzzle, add any known letters, and press **Solve clue**. The selected model loads automatically. Answers are English single-word fills of up to 32 letters.
 
 - For **A bird or a construction machine**, try `?R??E`. A question mark is one missing letter. Five question marks mean any five-letter answer.
