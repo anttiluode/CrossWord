@@ -2,6 +2,8 @@
 
 ![pic](pic.png)
 
+Paper: https://github.com/anttiluode/RakeisuusClaude/blob/main/HIERARCHICAL_GEOMETRY.md
+
 Enter a crossword clue from your own puzzle, add any known letters, and press **Solve clue**. The selected model loads automatically. Answers can be English words or phrases of up to 32 letters. Spaces in a pattern mark word boundaries.
 
 - For **A bird or a construction machine**, try `?R??E`. A question mark is one missing letter. Five question marks mean any five-letter answer.
