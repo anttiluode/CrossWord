@@ -12,6 +12,8 @@ Enter a crossword clue from your own puzzle, add any known letters, and press **
 - **Candidate words** lets you rank your own shortlist. With an empty shortlist, the model proposes answers and the solver adds matching spellings from likely next tokens. If a spaced pattern has no matches in the generated list, the solver also tries likely word tokens in sequence at the specified boundaries. The pattern filters every candidate before scoring.
 - **Proposal details** shows where the suggestions came from. A single-token suggestion can be a fragment. The solver can miss valid answers.
 
+![pic2](pic2.png)
+
 ## Run locally
 
 Python 3.11 or 3.12. On Windows Command Prompt:
