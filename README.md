@@ -1,15 +1,3 @@
----
-title: CrossWord
-emoji: 🧩
-colorFrom: green
-colorTo: yellow
-sdk: gradio
-sdk_version: 5.50.0
-python_version: "3.11"
-app_file: app.py
-pinned: false
----
-
 # CrossWord
 
 ![pic](pic.png)
