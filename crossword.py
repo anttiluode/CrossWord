@@ -10,13 +10,14 @@ def terms(text, limit=12):
 
 
 def normalize_mask(mask):
-    mask = mask.strip().upper().replace("_", "?").replace(".", "?")
-    if mask and not re.fullmatch(r"[A-Z?]{1,32}", mask):
-        raise ValueError("Use up to 32 letters and ? for unknown squares, for example ?R??E.")
+    mask = " ".join(mask.upper().split()).replace("_", "?").replace(".", "?")
+    if len(mask.replace(" ", "")) > 32 or (mask and not re.fullmatch(r"[A-Z?]+(?: [A-Z?]+)*", mask)):
+        raise ValueError("Use up to 32 letters or ? squares. Separate words with spaces, as in N?W Y?RK.")
     return mask
 
 
 def matches(word, mask):
     mask = normalize_mask(mask)
-    return bool(re.fullmatch(r"[a-zA-Z]{1,32}", word) and
+    word = " ".join(word.split())
+    return bool(len(word.replace(" ", "")) <= 32 and re.fullmatch(r"[a-zA-Z]+(?: [a-zA-Z]+)*", word) and
                 (not mask or re.fullmatch(mask.replace("?", "."), word.upper())))

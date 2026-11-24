@@ -14,11 +14,12 @@ pinned: false
 
 ![pic](pic.png)
 
-Enter a crossword clue from your own puzzle, add any known letters, and press **Solve clue**. The selected model loads automatically. Answers are English single-word fills of up to 32 letters.
+Enter a crossword clue from your own puzzle, add any known letters, and press **Solve clue**. The selected model loads automatically. Answers can be English words or phrases of up to 32 letters. Spaces in a pattern mark word boundaries.
 
 - For **A bird or a construction machine**, try `?R??E`. A question mark is one missing letter. Five question marks mean any five-letter answer.
-- For **Marsh bird**, add `hoist, winch, pulley` under **Second meaning** to favor answers that also fit the equipment sense.
-- **Candidate words** lets you rank your own shortlist. With an empty shortlist, the model proposes answers and the solver adds matching spellings from likely next tokens. The pattern filters every candidate before scoring.
+- For a place name, leave the clue empty, enter `N?W Y?RK` in **Known letters**, and enter `town` under **Meaning hint**. You can also use letters alone to see matching proposals in model order.
+- For **Marsh bird**, add `hoist, winch, pulley` under **Meaning hint** to favor answers that also fit the equipment sense.
+- **Candidate words** lets you rank your own shortlist. With an empty shortlist, the model proposes answers and the solver adds matching spellings from likely next tokens. If a spaced pattern has no matches in the generated list, the solver also tries likely word tokens in sequence at the specified boundaries. The pattern filters every candidate before scoring.
 - **Proposal details** shows where the suggestions came from. A single-token suggestion can be a fragment. The solver can miss valid answers.
 
 ## Run locally
@@ -46,7 +47,7 @@ To host it, create a **Gradio Space** and copy the repository files to its root,
 
 ## How scoring works
 
-The clue score measures how much the clue changes the model's yes/no log odds for each answer relative to an unspecified clue. Higher scores rank first.
+The answer score normally measures how much the clue changes the model's yes/no log odds for each answer relative to an unspecified clue. For pattern-guided phrase suggestions, the score also includes the model’s relative log probability per word. This favors plausible phrases among spellings that fit the same pattern. Higher scores rank first.
 
 With a second meaning, the solver averages the supplied related words at the item embedding and the first four decoder blocks (or fewer on shallower models). It patches those vectors into a neutral item slot and measures how much they change the candidate's membership score. Each candidate receives a rank for each meaning. The solver favors the best worst rank, breaking ties by rank sum and then by the original clue ranking. The two displayed scores measure different prompts and have different scales.
 

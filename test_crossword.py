@@ -8,7 +8,11 @@ class CrosswordTests(unittest.TestCase):
     def test_patterns(self):
         self.assertTrue(cw.matches("crane", "?R..E"))
         self.assertFalse(cw.matches("raven", "?R..E"))
-        self.assertFalse(cw.matches("two words", ""))
+        self.assertTrue(cw.matches("two words", ""))
+        self.assertTrue(cw.matches("New York", " n?w  y?rk "))
+        self.assertFalse(cw.matches("newyork", "n?w y?rk"))
+        self.assertFalse(cw.matches("new port", "n?w y?rk"))
+        self.assertFalse(cw.matches("new york", "n?wy?rk"))
         with self.assertRaises(ValueError):
             cw.matches("crane", "*")
 
@@ -23,6 +27,16 @@ class InterventionTests(unittest.TestCase):
         self.assertEqual(len(rows[0]), 3)
         rows, _ = engine.solve_clue(name, "Marsh bird", "?R??E", "crane, heron")
         self.assertEqual(len(rows[0]), 2)
+
+    def test_hint_only_and_pattern_only(self):
+        import engine
+        name = os.environ["CROSSWORD_TEST_MODEL"]
+        for hint, columns in [("town", 2), ("", 1)]:
+            rows, _ = engine.solve_clue(name, "", "n?w y?rk", "New York, Newark", hint)
+            self.assertEqual([row[0] for row in rows], ["new york"])
+            self.assertEqual(len(rows[0]), columns)
+        with self.assertRaises(ValueError):
+            engine.solve_clue(name, "", "", "", "")
 
     def test_single_token_transplant_and_neutral_recovery(self):
         import engine

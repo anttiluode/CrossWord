@@ -163,6 +163,44 @@ class Reader:
         return list(found)
 
     @torch.inference_mode()
+    def phrase_proposals(self, context, mask):
+        """Back up free generation with a small beam of word-boundary token completions."""
+        prompt, _ = self.encode(context + "\nReply with only the matching phrase.")
+        # Decode once for this fallback. Continuations must actually start a new word.
+        if not hasattr(self, "_word_tokens"):
+            special = set(self.tok.all_special_ids)
+            ids = [i for i in self.tok.get_vocab().values() if i not in special]
+            pieces = self.tok.batch_decode([[i] for i in ids], clean_up_tokenization_spaces=False)
+            self._word_tokens = [(i, piece) for i, piece in zip(ids, pieces)
+                                 if re.fullmatch(r" ?[a-zA-Z]{1,32}", piece)]
+        beam = [(0.0, [], [])]
+        for index, part in enumerate(mask.split()):
+            pattern = re.compile(part.replace("?", "."), re.IGNORECASE)
+            allowed = [(i, token.strip().lower()) for i, token in self._word_tokens
+                       if (index == 0 or token.startswith(" ")) and pattern.fullmatch(token.strip())]
+            if not allowed:
+                return {}
+            sequences = [prompt + suffix for _, suffix, _ in beam]
+            inputs = torch.tensor(sequences, device=self.device)
+            logits = self.model(input_ids=inputs, use_cache=False).logits[:, -1].float().log_softmax(-1)
+            allowed = [(i, word) for i, word in allowed if i < logits.shape[-1]]
+            if not allowed:
+                return {}
+            indices, words = zip(*allowed)
+            scores = logits[:, list(indices)].tolist()
+            options = [(total + score, suffix + [i], prefix + [word])
+                       for (total, suffix, prefix), row in zip(beam, scores)
+                       for i, word, score in zip(indices, words, row)]
+            unique = {}
+            for item in sorted(options, key=lambda o: -o[0]):
+                unique.setdefault(tuple(item[2]), item)
+                if len(unique) == 4:
+                    break
+            beam = list(unique.values())
+        best = beam[0][0]
+        return {" ".join(words): (score - best) / len(words) for score, _, words in beam}
+
+    @torch.inference_mode()
     def margins(self, bodies, states=None):
         results = []
         for i in range(0, len(bodies), 4):
@@ -190,40 +228,57 @@ def proposal_words(reply, mask):
 
 def solve_clue(name, clue, mask, candidates, related=""):
     clue = clue.strip()
-    if not clue or len(clue) > 500:
-        raise ValueError("Enter a crossword clue of 1–500 characters.")
+    if len(clue) > 500:
+        raise ValueError("Keep the crossword clue under 501 characters.")
     mask = normalize_mask(mask)
     supplied = terms(candidates, 24)
     group = terms(related)
+    if not clue and group:
+        clue, group = ", ".join(group), []
+    if not clue and not mask:
+        raise ValueError("Enter a clue, known letters, or a meaning hint.")
     with LOCK:
         load_model(name)
         lm = reader(name.strip())
+        phrase_scores = {}
         if supplied:
             proposed = supplied
             details = "Ranked your shortlist."
         else:
-            context = f"Crossword clue: {clue}"
+            context = f"Crossword clue: {clue}" if clue else "Fill this crossword pattern."
             if mask:
-                context += f"\n{len(mask)} letters. Pattern: {mask} (? = unknown)."
+                squares = len(mask.replace(" ", ""))
+                context += f"\n{squares} letters. Pattern: {mask} (? = unknown)."
             if group:
                 context += "\nAnother sense is related to: " + ", ".join(group) + "."
-            raw = lm.generate(context + "\nGive six possible single-word answers, separated by commas.")
+            form = "answers" if " " in mask or not mask else "single-word answers"
+            raw = lm.generate(context + f"\nGive six possible {form}, separated by commas.")
             proposed = proposal_words(raw, mask)
             # Free generation also covers answers that need several tokenizer pieces.
             # A second read supplies literal matching spellings from likely first tokens.
-            extras = lm.token_proposals(context + "\nReply with one answer word.", mask)
+            extras = [] if " " in mask else lm.token_proposals(context + "\nReply with one answer word.", mask)
             proposed.extend(extras)
-            details = f"Model proposals: {raw}\nSingle-token suggestions: {', '.join(extras) or 'none'}"
-        pool = list(dict.fromkeys(w.lower() for w in proposed if matches(w, mask)))
+            details = f"Model proposals: {raw}"
+            if extras:
+                details += "\nSingle-token suggestions: " + ", ".join(extras)
+            if not proposed and " " in mask:
+                phrase_scores = lm.phrase_proposals(context, mask)
+                proposed = list(phrase_scores)
+                details += "\nPattern-guided phrase suggestions: " + (", ".join(proposed) or "none")
+        pool = list(dict.fromkeys(" ".join(w.lower().split()) for w in proposed if matches(w, mask)))
         if not pool:
             return [], "No answers matched. Check the letters or enter a shortlist.\n" + details
+
+        if not clue:
+            return [[w] for w in pool], details + "\nLetter matches in proposal order."
 
         def judge(text):
             return lm.margins([f'Crossword clue: {text}\nCandidate solution: {w}\n'
                                'Does this solve the clue? A = yes, B = no. Reply with just A or B.'
                                for w in pool])
 
-        direct = [v-b for v, b in zip(judge(clue), judge("(unspecified)"))]
+        direct = [v - b + phrase_scores.get(word, 0)
+                  for word, v, b in zip(pool, judge(clue), judge("(unspecified)"))]
         order = sorted(range(len(pool)), key=lambda i: -direct[i])
         if not group:
             return [[pool[i], round(direct[i], 3)] for i in order], details
