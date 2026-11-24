@@ -9,7 +9,7 @@ import threading
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from crossword import matches, terms
+from crossword import matches, normalize_mask, terms
 
 MODELS = ["HuggingFaceTB/SmolLM2-135M-Instruct", "Qwen/Qwen2.5-0.5B-Instruct",
           "Qwen/Qwen3-1.7B"]
@@ -36,7 +36,7 @@ def load_model(name):
 
 def reader(name):
     if ACTIVE is None or ACTIVE.name != name:
-        raise ValueError("Press Load model for the selected checkpoint first.")
+        raise ValueError("The selected checkpoint is not loaded.")
     return ACTIVE
 
 
@@ -136,14 +136,31 @@ class Reader:
         return stack
 
     @torch.inference_mode()
-    def generate(self, body, states=None, tokens=36):
-        ids, pos = self.encode(body, "thing" if states is not None else None)
+    def generate(self, body, tokens=58):
+        ids, _ = self.encode(body)
         inputs = torch.tensor([ids], device=self.device)
-        # Reapply patches during full forwards, including after the first generated token.
-        with self.patch(states, [pos]):
-            out = self.model.generate(inputs, attention_mask=torch.ones_like(inputs), do_sample=False,
-                       max_new_tokens=tokens, use_cache=states is None, pad_token_id=self.pad)
+        out = self.model.generate(inputs, attention_mask=torch.ones_like(inputs), do_sample=False,
+                                  max_new_tokens=tokens, pad_token_id=self.pad)
         return self.tok.decode(out[0, len(ids):], skip_special_tokens=True).strip()
+
+    @torch.inference_mode()
+    def token_proposals(self, prompt, mask):
+        ids, _ = self.encode(prompt)
+        inputs = torch.tensor([ids], device=self.device)
+        logits = self.model(input_ids=inputs, use_cache=False).logits[0, -1]
+        ids = logits.topk(min(8192, len(self.tok), logits.shape[0])).indices.tolist()
+        special = set(self.tok.all_special_ids)
+        size = len(self.tok)
+        ids = [i for i in ids if i < size and i not in special]
+        words = self.tok.batch_decode([[i] for i in ids], clean_up_tokenization_spaces=False)
+        found = {}
+        for word in words:
+            word = word.strip().lower()
+            if matches(word, mask):
+                found[word] = None
+                if len(found) == 8:
+                    break
+        return list(found)
 
     @torch.inference_mode()
     def margins(self, bodies, states=None):
@@ -171,85 +188,55 @@ def proposal_words(reply, mask):
     return list(dict.fromkeys(w for w in words if matches(w, mask)))[:16]
 
 
-def ask_crossing(name, left, right, mix, depth, question):
-    a, b = terms(left), terms(right)
-    if not a or not question.strip() or len(question) > 500:
-        raise ValueError("Enter a left group and a question of 1–500 characters.")
-    with LOCK:
-        lm = reader(name)
-        pa = lm.prototype(a, depth)
-        if b:
-            pb = lm.prototype(b, depth)
-            pa = [torch.lerp(x, y, float(mix)) for x, y in zip(pa, pb)]
-        latent = lm.generate(lm.body("thing", question), pa)
-        groups = "Group A: " + ", ".join(a) + ("\nGroup B: " + ", ".join(b) if b else "")
-        plain = lm.generate(groups + "\n" + question)
-        return latent, plain
-
-
-def rank(name, left, right, candidates, mask, depth):
-    a, b = terms(left), terms(right)
-    matches("test", mask)
-    if not a or not b:
-        raise ValueError("Enter clue words for both sides.")
-    pool = terms(candidates, 24)
-    with LOCK:
-        lm = reader(name)
-        groups = f"First group: {', '.join(a)}. Second group: {', '.join(b)}."
-        if not pool:
-            result = lm.generate(groups + f"\nList six single English words that fit both groups, "
-                                 f"possibly in different senses. Pattern: {mask or 'any'}. Commas only.", tokens=58)
-            pool = proposal_words(result, mask)
-        pool = list(dict.fromkeys(w.lower() for w in pool if matches(w, mask)))
-        if not pool:
-            raise ValueError("No candidate matches the letter pattern. Enter your own shortlist.")
-        queries = [f'Could the word "{w}" belong with the item above in one of its ordinary meanings? '
-                   "A = yes, B = no. Reply with just A or B." for w in pool]
-        bodies = [lm.body("thing", q) for q in queries]
-        neutral = lm.margins(bodies)
-        scores = []
-        for group in (a, b):
-            margins = lm.margins(bodies, lm.prototype(group, depth))
-            scores.append([m - n for m, n in zip(margins, neutral)])
-        def joint(context):
-            return lm.margins([f'{context}\nCould "{w}" fit BOTH groups, possibly in different senses? '
-                               'A = yes, B = no. Reply with just A or B.' for w in pool])
-        plain, blank = joint(groups), joint("First group: unspecified. Second group: unspecified.")
-        rows = [(w, x, y, min(x, y), p-q) for w, x, y, p, q in zip(pool, *scores, plain, blank)]
-        return [[w, *[round(v, 3) for v in scores_]] for w, *scores_ in
-                sorted(rows, key=lambda row: row[3], reverse=True)]
-
-
-def grid_hint(name, clue, mask):
-    with LOCK:
-        reply = reader(name).generate(
-            f"Crossword clue: {clue}\nLength: {len(mask)}. Pattern: {mask} (? is unknown). "
-            "List three possible single-word answers, separated by commas. Only words.", tokens=42)
-    found = proposal_words(reply, mask)
-    return ("Pattern matches: " + ", ".join(w.upper() for w in found) if found else
-            "No proposed word matched the crossing letters.") + "\n\nModel output: " + reply
-
-
-def solve_clue(name, clue, mask, candidates):
-    if not clue.strip() or len(clue) > 500:
+def solve_clue(name, clue, mask, candidates, related=""):
+    clue = clue.strip()
+    if not clue or len(clue) > 500:
         raise ValueError("Enter a crossword clue of 1–500 characters.")
-    matches("test", mask)
+    mask = normalize_mask(mask)
     supplied = terms(candidates, 24)
+    group = terms(related)
     with LOCK:
-        lm = reader(name)
-        raw = ""
-        if not supplied:
-            raw = lm.generate(f"Crossword clue: {clue}\nLetter pattern: {mask or 'any'} "
-                              "(? means one unknown letter). Give up to six candidate answers. "
-                              "Single words only, separated by commas.", tokens=58)
-            supplied = proposal_words(raw, mask)
-        pool = list(dict.fromkeys(w.lower() for w in supplied if matches(w, mask)))
+        load_model(name)
+        lm = reader(name.strip())
+        if supplied:
+            proposed = supplied
+            details = "Ranked your shortlist."
+        else:
+            context = f"Crossword clue: {clue}"
+            if mask:
+                context += f"\n{len(mask)} letters. Pattern: {mask} (? = unknown)."
+            if group:
+                context += "\nAnother sense is related to: " + ", ".join(group) + "."
+            raw = lm.generate(context + "\nGive six possible single-word answers, separated by commas.")
+            proposed = proposal_words(raw, mask)
+            # Free generation also covers answers that need several tokenizer pieces.
+            # A second read supplies literal matching spellings from likely first tokens.
+            extras = lm.token_proposals(context + "\nReply with one answer word.", mask)
+            proposed.extend(extras)
+            details = f"Model proposals: {raw}\nSingle-token suggestions: {', '.join(extras) or 'none'}"
+        pool = list(dict.fromkeys(w.lower() for w in proposed if matches(w, mask)))
         if not pool:
-            return [], raw or "No candidate matches the letter pattern."
+            return [], "No answers matched. Check the letters or enter a shortlist.\n" + details
+
         def judge(text):
             return lm.margins([f'Crossword clue: {text}\nCandidate solution: {w}\n'
                                'Does this solve the clue? A = yes, B = no. Reply with just A or B.'
                                for w in pool])
-        values, neutral = judge(clue), judge("(unspecified)")
-        scored = sorted(zip(pool, (v-n for v, n in zip(values, neutral))), key=lambda pair: -pair[1])
-        return [[w, round(s, 3)] for w, s in scored], raw or "Ranked the supplied shortlist."
+
+        direct = [v-b for v, b in zip(judge(clue), judge("(unspecified)"))]
+        order = sorted(range(len(pool)), key=lambda i: -direct[i])
+        if not group:
+            return [[pool[i], round(direct[i], 3)] for i in order], details
+
+        bodies = [lm.body("thing", f'Could "{w}" belong with the item above in one of its ordinary '
+                          'meanings? A = yes, B = no. Reply with just A or B.') for w in pool]
+        base = lm.margins(bodies)
+        patched = lm.margins(bodies, lm.prototype(group, min(4, len(lm.blocks))))
+        second = [v-b for v, b in zip(patched, base)]
+        # Rank each signal separately. Ties share a rank; scales can differ by prompt.
+        def positions(values):
+            return [sum(other > value for other in values) for value in values]
+
+        first_rank, second_rank = positions(direct), positions(second)
+        order.sort(key=lambda i: (max(first_rank[i], second_rank[i]), first_rank[i] + second_rank[i]))
+        return [[pool[i], round(direct[i], 3), round(second[i], 3)] for i in order], details

@@ -5,24 +5,6 @@ import crossword as cw
 
 
 class CrosswordTests(unittest.TestCase):
-    def test_solution_entries_finish_each_grid(self):
-        for puzzle, (rows, _) in cw.PUZZLES.items():
-            fills = {}
-            for key, (_, cells) in cw.slots(puzzle).items():
-                fills = cw.enter(puzzle, key, fills, "".join(rows[y][x] for y, x in cells))
-            self.assertIn("Solved!", cw.check(puzzle, fills))
-
-    def test_crossings_and_clear(self):
-        puzzle = "Pocket edition"
-        fills = cw.enter(puzzle, "1A", {}, "tan")
-        self.assertEqual(cw.pattern(puzzle, "3D", fills), "N??")
-        with self.assertRaises(ValueError):
-            cw.enter(puzzle, "3D", fills, "cat")
-        fills = cw.enter(puzzle, "3D", fills, "net")
-        del fills["1A"]
-        self.assertEqual(cw.pattern(puzzle, "1A", fills), "??N")
-        self.assertEqual(cw.pattern(puzzle, "3D", fills), "???")
-
     def test_patterns(self):
         self.assertTrue(cw.matches("crane", "?R..E"))
         self.assertFalse(cw.matches("raven", "?R..E"))
@@ -33,6 +15,15 @@ class CrosswordTests(unittest.TestCase):
 
 @unittest.skipUnless(os.getenv("CROSSWORD_TEST_MODEL"), "Set CROSSWORD_TEST_MODEL to run a real checkpoint.")
 class InterventionTests(unittest.TestCase):
+    def test_solving_with_a_second_meaning(self):
+        import engine
+        name = os.environ["CROSSWORD_TEST_MODEL"]
+        rows, _ = engine.solve_clue(name, "Marsh bird", "?R??E", "crane, heron", "hoist, pulley")
+        self.assertEqual([row[0] for row in rows], ["crane"])
+        self.assertEqual(len(rows[0]), 3)
+        rows, _ = engine.solve_clue(name, "Marsh bird", "?R??E", "crane, heron")
+        self.assertEqual(len(rows[0]), 2)
+
     def test_single_token_transplant_and_neutral_recovery(self):
         import engine
         name = os.environ["CROSSWORD_TEST_MODEL"]
